@@ -29,7 +29,7 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost','127.0.0.1','api.zibaris.sandboxmb.com']
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
