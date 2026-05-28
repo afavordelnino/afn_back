@@ -15,28 +15,50 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from .models import (
+    CategoriaProveedor,
     CategoriaReceta,
+    GrupoComensales,
     Ingrediente,
+    InventarioInsumo,
+    Merma,
     MenuSemanal,
     MenuSemanalDetalle,
     MenuSemanalDetalleReceta,
+    MovimientoInventario,
+    NivelGrupo,
+    PaxTiempoComida,
+    PeriodoGrupo,
     Proveedor,
     Receta,
     RecetaIngrediente,
+    RecepcionInsumo,
+    RecepcionInsumoDetalle,
     SeccionAlmacen,
     SeccionSistema,
+    TiempoComida,
     UnidadMedida,
     Usuario,
+    recalcular_inventario_ingrediente,
 )
 from .serializers import (
+    CategoriaProveedorSerializer,
     CategoriaRecetaSerializer,
+    GrupoComensalesSerializer,
     IngredienteSerializer,
+    InventarioInsumoSerializer,
+    MermaSerializer,
     MenuSemanalSerializer,
+    MovimientoInventarioSerializer,
+    NivelGrupoSerializer,
+    PaxTiempoComidaSerializer,
+    PeriodoGrupoSerializer,
     ProveedorSerializer,
     RecetaIngredienteSerializer,
     RecetaSerializer,
+    RecepcionInsumoSerializer,
     SeccionAlmacenSerializer,
     SeccionSistemaSerializer,
+    TiempoComidaSerializer,
     UnidadMedidaSerializer,
     UsuarioSerializer,
 )
@@ -246,20 +268,20 @@ class SeccionAlmacenViewSet(viewsets.ModelViewSet):
         return normalized in ['1', 'true', 'si', 'sí', 'yes', 'activo', 'activa']
 
 
-class ProveedorViewSet(viewsets.ModelViewSet):
-    queryset = Proveedor.objects.all()
-    serializer_class = ProveedorSerializer
+class CategoriaProveedorViewSet(viewsets.ModelViewSet):
+    queryset = CategoriaProveedor.objects.all()
+    serializer_class = CategoriaProveedorSerializer
 
     @action(detail=False, methods=['get'], url_path='plantilla')
     def plantilla(self, request):
         response = HttpResponse(content_type='text/csv; charset=utf-8')
-        response['Content-Disposition'] = 'attachment; filename="plantilla_proveedores.csv"'
+        response['Content-Disposition'] = 'attachment; filename="plantilla_categorias_proveedor.csv"'
 
         writer = csv.writer(response)
         writer.writerow(['nombre', 'activo'])
-        writer.writerow(['A Favor del Niño', 'true'])
-        writer.writerow(['Fundación del Dr. Simi', 'true'])
-        writer.writerow(['Vegetales frescos', 'true'])
+        writer.writerow(['Res', 'true'])
+        writer.writerow(['Pollo', 'true'])
+        writer.writerow(['Verduras', 'true'])
         return response
 
     @action(
@@ -306,11 +328,11 @@ class ProveedorViewSet(viewsets.ModelViewSet):
                 errores.append({'fila': index, 'error': 'El nombre es obligatorio.'})
                 continue
 
-            if len(nombre) > 180:
-                errores.append({'fila': index, 'error': 'El nombre debe tener máximo 180 caracteres.'})
+            if len(nombre) > 80:
+                errores.append({'fila': index, 'error': 'El nombre debe tener máximo 80 caracteres.'})
                 continue
 
-            proveedor, created = Proveedor.objects.update_or_create(
+            categoria, created = CategoriaProveedor.objects.update_or_create(
                 nombre=nombre,
                 defaults={'activo': activo}
             )
@@ -331,6 +353,185 @@ class ProveedorViewSet(viewsets.ModelViewSet):
         return normalized in ['1', 'true', 'si', 'sí', 'yes', 'activo', 'activa']
 
 
+class ProveedorViewSet(viewsets.ModelViewSet):
+    queryset = Proveedor.objects.prefetch_related('categorias_proveedor')
+    serializer_class = ProveedorSerializer
+
+    @action(detail=False, methods=['get'], url_path='plantilla')
+    def plantilla(self, request):
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = 'attachment; filename="plantilla_proveedores.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow([
+            'codigo_excel',
+            'nombre',
+            'contacto',
+            'whatsapp',
+            'email',
+            'dias_entrega',
+            'anticipacion_dias',
+            'metodo_pedido',
+            'categorias',
+            'activo',
+        ])
+        writer.writerow([
+            'P001',
+            'Carnicería "La Única"',
+            'Marco Antonio Contreras Plata',
+            '55 3643 9539',
+            'marcoplata.2022@gmail.com',
+            'Lunes',
+            '5',
+            'Email',
+            'Res · Cerdo · Embutidos',
+            'true',
+        ])
+        writer.writerow([
+            'P002',
+            'Pollería "Fídel"',
+            'Arely Hernández Valdes',
+            '55 7478 2958',
+            'polleriafidelmedellin@hotmail.com',
+            'Lunes',
+            '5',
+            'Email',
+            'Pollo',
+            'true',
+        ])
+        return response
+
+    @action(
+        detail=False,
+        methods=['post'],
+        parser_classes=[MultiPartParser, FormParser],
+        url_path='carga-masiva'
+    )
+    def carga_masiva(self, request):
+        archivo = request.FILES.get('archivo')
+
+        if not archivo:
+            return Response(
+                {'detail': 'Debes adjuntar un archivo CSV en el campo archivo.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            contenido = archivo.read().decode('utf-8-sig')
+        except UnicodeDecodeError:
+            return Response(
+                {'detail': 'El archivo debe estar codificado en UTF-8.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reader = csv.DictReader(io.StringIO(contenido))
+        columnas_requeridas = {
+            'codigo_excel',
+            'nombre',
+            'contacto',
+            'whatsapp',
+            'email',
+            'dias_entrega',
+            'anticipacion_dias',
+            'metodo_pedido',
+            'categorias',
+            'activo',
+        }
+
+        if not reader.fieldnames or not columnas_requeridas.issubset(set(reader.fieldnames)):
+            return Response(
+                {'detail': 'La plantilla debe incluir las columnas: codigo_excel, nombre, contacto, whatsapp, email, dias_entrega, anticipacion_dias, metodo_pedido, categorias, activo.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        creadas = 0
+        actualizadas = 0
+        errores = []
+
+        for index, row in enumerate(reader, start=2):
+            codigo_excel = (row.get('codigo_excel') or '').strip()
+            nombre = (row.get('nombre') or '').strip()
+            contacto = (row.get('contacto') or '').strip()
+            whatsapp = (row.get('whatsapp') or '').strip()
+            email = (row.get('email') or '').strip()
+            dias_entrega = (row.get('dias_entrega') or '').strip()
+            anticipacion_dias = self._parse_decimal(row.get('anticipacion_dias'))
+            metodo_pedido = (row.get('metodo_pedido') or '').strip()
+            categorias = (row.get('categorias') or '').strip()
+            activo = self._parse_bool(row.get('activo'))
+
+            if not nombre:
+                errores.append({'fila': index, 'error': 'El nombre es obligatorio.'})
+                continue
+
+            if len(nombre) > 180:
+                errores.append({'fila': index, 'error': 'El nombre debe tener máximo 180 caracteres.'})
+                continue
+
+            proveedor, created = Proveedor.objects.update_or_create(
+                nombre=nombre,
+                defaults={
+                    'codigo_excel': codigo_excel or None,
+                    'contacto': contacto,
+                    'whatsapp': whatsapp,
+                    'email': '' if email.lower() == 'n/a' else email,
+                    'dias_entrega': dias_entrega,
+                    'anticipacion_dias': anticipacion_dias,
+                    'metodo_pedido': metodo_pedido,
+                    'categorias': categorias,
+                    'activo': activo,
+                }
+            )
+            self._sync_categorias(proveedor, categorias)
+
+            if created:
+                creadas += 1
+            else:
+                actualizadas += 1
+
+        return Response({
+            'creadas': creadas,
+            'actualizadas': actualizadas,
+            'errores': errores
+        })
+
+    def _parse_bool(self, value):
+        normalized = str(value or '').strip().lower()
+        return normalized in ['1', 'true', 'si', 'sí', 'yes', 'activo', 'activa']
+
+    def _parse_decimal(self, value):
+        normalized = str(value or '').strip().lower()
+
+        if not normalized or normalized == 'n/a' or normalized.startswith('←'):
+            return None
+
+        try:
+            return normalized.replace(',', '.')
+        except (TypeError, ValueError):
+            return None
+
+    def _sync_categorias(self, proveedor, categorias_texto):
+        nombres = []
+        normalized = (categorias_texto or '').replace('·', ',').replace(';', ',')
+
+        for item in normalized.split(','):
+            nombre = item.strip()
+
+            if nombre and nombre not in nombres:
+                nombres.append(nombre)
+
+        categorias = []
+
+        for nombre in nombres:
+            categoria, created = CategoriaProveedor.objects.get_or_create(
+                nombre=nombre,
+                defaults={'activo': True}
+            )
+            categorias.append(categoria)
+
+        proveedor.categorias_proveedor.set(categorias)
+
+
 class IngredienteViewSet(viewsets.ModelViewSet):
     queryset = Ingrediente.objects.select_related(
         'unidad_compra',
@@ -340,6 +541,90 @@ class IngredienteViewSet(viewsets.ModelViewSet):
         'proveedores__precios'
     )
     serializer_class = IngredienteSerializer
+
+    @action(detail=True, methods=['get'], url_path='historial-precios')
+    def historial_precios(self, request, pk=None):
+        ingrediente = self.get_object()
+        detalles = RecepcionInsumoDetalle.objects.filter(
+            ingrediente=ingrediente
+        ).select_related(
+            'recepcion',
+            'recepcion__proveedor',
+            'unidad_medida'
+        ).order_by(
+            '-recepcion__fecha',
+            '-recepcion__creado'
+        )
+
+        historial = []
+
+        for detalle in detalles:
+            historial.append({
+                'id': detalle.id,
+                'fecha': detalle.recepcion.fecha,
+                'folio': detalle.recepcion.folio,
+                'proveedor': detalle.recepcion.proveedor_id,
+                'proveedor_nombre': detalle.recepcion.proveedor.nombre if detalle.recepcion.proveedor else '',
+                'cantidad': detalle.cantidad,
+                'unidad': detalle.unidad_medida.clave,
+                'precio_unitario': detalle.precio_unitario,
+                'precio_total': detalle.precio_total,
+                'notas': detalle.notas,
+            })
+
+        return Response(historial)
+
+
+class RecepcionInsumoViewSet(viewsets.ModelViewSet):
+    queryset = RecepcionInsumo.objects.select_related(
+        'proveedor'
+    ).prefetch_related(
+        'detalles__ingrediente',
+        'detalles__unidad_medida'
+    )
+    serializer_class = RecepcionInsumoSerializer
+
+    def perform_destroy(self, instance):
+        ingredientes = set(detalle.ingrediente for detalle in instance.detalles.all())
+        instance.delete()
+
+        for ingrediente in ingredientes:
+            recalcular_inventario_ingrediente(ingrediente)
+
+
+class InventarioInsumoViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = InventarioInsumo.objects.select_related(
+        'ingrediente',
+        'ingrediente__seccion_almacen',
+        'unidad_medida'
+    )
+    serializer_class = InventarioInsumoSerializer
+
+
+class MovimientoInventarioViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = MovimientoInventario.objects.select_related(
+        'ingrediente',
+        'unidad_medida',
+        'recepcion',
+        'recepcion__proveedor'
+    )
+    serializer_class = MovimientoInventarioSerializer
+
+
+class MermaViewSet(viewsets.ModelViewSet):
+    queryset = Merma.objects.select_related(
+        'ingrediente',
+        'receta',
+        'unidad_medida'
+    )
+    serializer_class = MermaSerializer
+
+    def perform_destroy(self, instance):
+        ingrediente = instance.ingrediente
+        instance.delete()
+
+        if ingrediente:
+            recalcular_inventario_ingrediente(ingrediente)
 
 
 class CategoriaRecetaViewSet(viewsets.ModelViewSet):
@@ -425,6 +710,64 @@ class CategoriaRecetaViewSet(viewsets.ModelViewSet):
     def _parse_bool(self, value):
         normalized = str(value or '').strip().lower()
         return normalized in ['1', 'true', 'si', 'sí', 'yes', 'activo', 'activa']
+
+
+class NivelGrupoViewSet(viewsets.ModelViewSet):
+    queryset = NivelGrupo.objects.all()
+    serializer_class = NivelGrupoSerializer
+
+
+class TiempoComidaViewSet(viewsets.ModelViewSet):
+    queryset = TiempoComida.objects.all()
+    serializer_class = TiempoComidaSerializer
+
+
+class PeriodoGrupoViewSet(viewsets.ModelViewSet):
+    queryset = PeriodoGrupo.objects.all()
+    serializer_class = PeriodoGrupoSerializer
+
+    @action(detail=True, methods=['post'], url_path='recalcular-pax')
+    def recalcular_pax(self, request, pk=None):
+        periodo = self.get_object()
+        tiempos = TiempoComida.objects.filter(activo=True)
+        resultados = []
+
+        for tiempo in tiempos:
+            total = 0
+            grupos_tiempo = periodo.grupos.filter(
+                activo=True,
+                tiempos_comida__tiempo_comida=tiempo,
+                tiempos_comida__aplica=True
+            ).select_related('nivel').prefetch_related('tiempos_comida')
+
+            for grupo in grupos_tiempo:
+                configuracion = grupo.tiempos_comida.filter(tiempo_comida=tiempo).first()
+                total += configuracion.pax_override if configuracion and configuracion.pax_override is not None else grupo.alumnos
+
+            pax, created = PaxTiempoComida.objects.update_or_create(
+                periodo=periodo,
+                tiempo_comida=tiempo,
+                defaults={'pax_calculado': total}
+            )
+            resultados.append(pax)
+
+        serializer = PaxTiempoComidaSerializer(resultados, many=True)
+        return Response(serializer.data)
+
+
+class GrupoComensalesViewSet(viewsets.ModelViewSet):
+    queryset = GrupoComensales.objects.select_related(
+        'periodo',
+        'nivel'
+    ).prefetch_related(
+        'tiempos_comida__tiempo_comida'
+    )
+    serializer_class = GrupoComensalesSerializer
+
+
+class PaxTiempoComidaViewSet(viewsets.ModelViewSet):
+    queryset = PaxTiempoComida.objects.select_related('periodo', 'tiempo_comida')
+    serializer_class = PaxTiempoComidaSerializer
 
 
 class RecetaViewSet(viewsets.ModelViewSet):

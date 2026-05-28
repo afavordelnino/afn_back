@@ -66,8 +66,33 @@ class SeccionAlmacen(models.Model):
         ordering = ['nombre']
 
 
+class CategoriaProveedor(models.Model):
+    nombre = models.CharField(max_length=80, unique=True)
+    activo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nombre
+
+    class Meta:
+        db_table = 'categoria_proveedor'
+        ordering = ['nombre']
+
+
 class Proveedor(models.Model):
+    codigo_excel = models.CharField(max_length=30, blank=True, null=True, db_index=True)
     nombre = models.CharField(max_length=180, unique=True)
+    contacto = models.CharField(max_length=180, blank=True, default="")
+    whatsapp = models.CharField(max_length=80, blank=True, default="")
+    email = models.EmailField(max_length=180, blank=True, default="")
+    dias_entrega = models.CharField(max_length=220, blank=True, default="")
+    anticipacion_dias = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
+    metodo_pedido = models.CharField(max_length=80, blank=True, default="")
+    categorias = models.TextField(blank=True, default="")
+    categorias_proveedor = models.ManyToManyField(
+        CategoriaProveedor,
+        blank=True,
+        related_name='proveedores'
+    )
     activo = models.BooleanField(default=True)
     creado = models.DateTimeField(auto_now_add=True)
     actualizado = models.DateTimeField(auto_now=True)
@@ -160,6 +185,244 @@ class PrecioIngredienteProveedor(models.Model):
         ]
 
 
+class RecepcionInsumo(models.Model):
+    folio = models.CharField(max_length=40, blank=True, default="")
+    fecha = models.DateField()
+    proveedor = models.ForeignKey(
+        Proveedor,
+        on_delete=models.PROTECT,
+        related_name='recepciones',
+        blank=True,
+        null=True
+    )
+    notas = models.TextField(blank=True, default="")
+    creado = models.DateTimeField(auto_now_add=True)
+    actualizado = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.folio or 'Recepción %s' % self.fecha
+
+    class Meta:
+        db_table = 'recepcion_insumo'
+        ordering = ['-fecha', '-creado']
+
+
+class RecepcionInsumoDetalle(models.Model):
+    recepcion = models.ForeignKey(
+        RecepcionInsumo,
+        on_delete=models.CASCADE,
+        related_name='detalles'
+    )
+    ingrediente = models.ForeignKey(
+        Ingrediente,
+        on_delete=models.PROTECT,
+        related_name='recepciones'
+    )
+    unidad_medida = models.ForeignKey(
+        UnidadMedida,
+        on_delete=models.PROTECT,
+        related_name='recepciones_insumo'
+    )
+    cantidad = models.DecimalField(max_digits=12, decimal_places=4)
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=4)
+    notas = models.CharField(max_length=220, blank=True, default="")
+
+    @property
+    def precio_total(self):
+        return self.cantidad * self.precio_unitario
+
+    def __str__(self):
+        return '%s - %s' % (self.recepcion, self.ingrediente)
+
+    class Meta:
+        db_table = 'recepcion_insumo_detalle'
+        ordering = ['ingrediente__nombre']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(cantidad__gt=0),
+                name='recepcion_insumo_detalle_cantidad_positiva'
+            ),
+            models.CheckConstraint(
+                condition=models.Q(precio_unitario__gte=0),
+                name='recepcion_insumo_detalle_precio_no_negativo'
+            ),
+        ]
+
+
+class InventarioInsumo(models.Model):
+    ingrediente = models.ForeignKey(
+        Ingrediente,
+        on_delete=models.CASCADE,
+        related_name='inventarios'
+    )
+    unidad_medida = models.ForeignKey(
+        UnidadMedida,
+        on_delete=models.PROTECT,
+        related_name='inventarios_insumo'
+    )
+    cantidad_actual = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    valor_total = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    actualizado = models.DateTimeField(auto_now=True)
+
+    @property
+    def costo_promedio(self):
+        if not self.cantidad_actual:
+            return 0
+
+        return self.valor_total / self.cantidad_actual
+
+    def __str__(self):
+        return '%s - %s %s' % (self.ingrediente, self.cantidad_actual, self.unidad_medida)
+
+    class Meta:
+        db_table = 'inventario_insumo'
+        ordering = ['ingrediente__nombre']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['ingrediente', 'unidad_medida'],
+                name='unique_inventario_insumo_unidad'
+            )
+        ]
+
+
+class MovimientoInventario(models.Model):
+    TIPO_ENTRADA_RECEPCION = 'ENTRADA_RECEPCION'
+    TIPO_ENTRADA_REINTEGRO_MERMA = 'ENTRADA_REINTEGRO_MERMA'
+    TIPO_CHOICES = [
+        (TIPO_ENTRADA_RECEPCION, 'Entrada por recepción'),
+        (TIPO_ENTRADA_REINTEGRO_MERMA, 'Entrada por reintegro de merma'),
+    ]
+
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES, default=TIPO_ENTRADA_RECEPCION)
+    fecha = models.DateField()
+    ingrediente = models.ForeignKey(
+        Ingrediente,
+        on_delete=models.PROTECT,
+        related_name='movimientos_inventario'
+    )
+    unidad_medida = models.ForeignKey(
+        UnidadMedida,
+        on_delete=models.PROTECT,
+        related_name='movimientos_inventario'
+    )
+    cantidad = models.DecimalField(max_digits=12, decimal_places=4)
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    recepcion = models.ForeignKey(
+        RecepcionInsumo,
+        on_delete=models.CASCADE,
+        related_name='movimientos_inventario',
+        blank=True,
+        null=True
+    )
+    recepcion_detalle = models.ForeignKey(
+        RecepcionInsumoDetalle,
+        on_delete=models.CASCADE,
+        related_name='movimientos_inventario',
+        blank=True,
+        null=True
+    )
+    merma = models.ForeignKey(
+        'Merma',
+        on_delete=models.CASCADE,
+        related_name='movimientos_inventario',
+        blank=True,
+        null=True
+    )
+    notas = models.CharField(max_length=220, blank=True, default="")
+    creado = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def precio_total(self):
+        return self.cantidad * self.precio_unitario
+
+    def __str__(self):
+        return '%s - %s - %s' % (self.fecha, self.ingrediente, self.cantidad)
+
+    class Meta:
+        db_table = 'movimiento_inventario'
+        ordering = ['-fecha', '-creado']
+
+
+class Merma(models.Model):
+    TIPO_INGREDIENTE = 'INGREDIENTE'
+    TIPO_RECETA = 'RECETA'
+    TIPO_CHOICES = [
+        (TIPO_INGREDIENTE, 'Ingrediente'),
+        (TIPO_RECETA, 'Receta'),
+    ]
+
+    fecha = models.DateField()
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    ingrediente = models.ForeignKey(
+        Ingrediente,
+        on_delete=models.PROTECT,
+        related_name='mermas',
+        blank=True,
+        null=True
+    )
+    receta = models.ForeignKey(
+        'Receta',
+        on_delete=models.PROTECT,
+        related_name='mermas',
+        blank=True,
+        null=True
+    )
+    unidad_medida = models.ForeignKey(
+        UnidadMedida,
+        on_delete=models.PROTECT,
+        related_name='mermas',
+        blank=True,
+        null=True
+    )
+    cantidad = models.DecimalField(max_digits=12, decimal_places=4)
+    regresa_inventario = models.BooleanField(default=False)
+    motivo = models.CharField(max_length=180, blank=True, default="")
+    notas = models.TextField(blank=True, default="")
+    creado = models.DateTimeField(auto_now_add=True)
+    actualizado = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return '%s - %s' % (self.fecha, self.tipo)
+
+    class Meta:
+        db_table = 'merma'
+        ordering = ['-fecha', '-creado']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(cantidad__gt=0),
+                name='merma_cantidad_positiva'
+            )
+        ]
+
+
+def recalcular_inventario_ingrediente(ingrediente):
+    movimientos = MovimientoInventario.objects.filter(ingrediente=ingrediente).select_related('unidad_medida')
+    totales = {}
+
+    for movimiento in movimientos:
+        unidad_id = movimiento.unidad_medida_id
+
+        if unidad_id not in totales:
+            totales[unidad_id] = {
+                'cantidad': 0,
+                'valor': 0,
+                'unidad': movimiento.unidad_medida,
+            }
+
+        totales[unidad_id]['cantidad'] += movimiento.cantidad
+        totales[unidad_id]['valor'] += movimiento.precio_total
+
+    InventarioInsumo.objects.filter(ingrediente=ingrediente).delete()
+
+    for total in totales.values():
+        InventarioInsumo.objects.create(
+            ingrediente=ingrediente,
+            unidad_medida=total['unidad'],
+            cantidad_actual=total['cantidad'],
+            valor_total=total['valor'],
+        )
+
+
 class CategoriaReceta(models.Model):
     nombre = models.CharField(max_length=80, unique=True)
     activo = models.BooleanField(default=True)
@@ -170,6 +433,142 @@ class CategoriaReceta(models.Model):
     class Meta:
         db_table = 'categoria_receta'
         ordering = ['nombre']
+
+
+class NivelGrupo(models.Model):
+    nombre = models.CharField(max_length=80, unique=True)
+    activo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nombre
+
+    class Meta:
+        db_table = 'nivel_grupo'
+        ordering = ['nombre']
+
+
+class PeriodoGrupo(models.Model):
+    nombre = models.CharField(max_length=120)
+    fecha_inicio = models.DateField()
+    fecha_fin = models.DateField()
+    activo = models.BooleanField(default=True)
+    notas = models.TextField(blank=True, default="")
+    creado = models.DateTimeField(auto_now_add=True)
+    actualizado = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.nombre
+
+    class Meta:
+        db_table = 'periodo_grupo'
+        ordering = ['-fecha_inicio']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(fecha_fin__gte=models.F('fecha_inicio')),
+                name='periodo_grupo_fechas_validas'
+            )
+        ]
+
+
+class TiempoComida(models.Model):
+    clave = models.CharField(max_length=30, unique=True)
+    nombre = models.CharField(max_length=80)
+    orden = models.PositiveSmallIntegerField(default=1)
+    activo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nombre
+
+    class Meta:
+        db_table = 'tiempo_comida'
+        ordering = ['orden', 'nombre']
+
+
+class GrupoComensales(models.Model):
+    periodo = models.ForeignKey(
+        PeriodoGrupo,
+        on_delete=models.CASCADE,
+        related_name='grupos'
+    )
+    nombre = models.CharField(max_length=100)
+    nivel = models.ForeignKey(
+        NivelGrupo,
+        on_delete=models.PROTECT,
+        related_name='grupos'
+    )
+    alumnos = models.PositiveIntegerField(default=0)
+    activo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return '%s - %s' % (self.periodo, self.nombre)
+
+    class Meta:
+        db_table = 'grupo_comensales'
+        ordering = ['periodo__fecha_inicio', 'nivel__nombre', 'nombre']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['periodo', 'nombre'],
+                name='unique_grupo_comensales_periodo_nombre'
+            )
+        ]
+
+
+class GrupoTiempoComida(models.Model):
+    grupo = models.ForeignKey(
+        GrupoComensales,
+        on_delete=models.CASCADE,
+        related_name='tiempos_comida'
+    )
+    tiempo_comida = models.ForeignKey(
+        TiempoComida,
+        on_delete=models.PROTECT,
+        related_name='grupos'
+    )
+    aplica = models.BooleanField(default=True)
+    pax_override = models.PositiveIntegerField(blank=True, null=True)
+
+    def __str__(self):
+        return '%s - %s' % (self.grupo, self.tiempo_comida)
+
+    class Meta:
+        db_table = 'grupo_tiempo_comida'
+        ordering = ['grupo__nombre', 'tiempo_comida__orden']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['grupo', 'tiempo_comida'],
+                name='unique_grupo_tiempo_comida'
+            )
+        ]
+
+
+class PaxTiempoComida(models.Model):
+    periodo = models.ForeignKey(
+        PeriodoGrupo,
+        on_delete=models.CASCADE,
+        related_name='pax_tiempos'
+    )
+    tiempo_comida = models.ForeignKey(
+        TiempoComida,
+        on_delete=models.PROTECT,
+        related_name='pax_periodos'
+    )
+    pax_calculado = models.PositiveIntegerField(default=0)
+    pax_confirmado = models.PositiveIntegerField(blank=True, null=True)
+    notas = models.TextField(blank=True, default="")
+    actualizado = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return '%s - %s' % (self.periodo, self.tiempo_comida)
+
+    class Meta:
+        db_table = 'pax_tiempo_comida'
+        ordering = ['periodo__fecha_inicio', 'tiempo_comida__orden']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['periodo', 'tiempo_comida'],
+                name='unique_pax_tiempo_comida_periodo'
+            )
+        ]
 
 
 class Receta(models.Model):
